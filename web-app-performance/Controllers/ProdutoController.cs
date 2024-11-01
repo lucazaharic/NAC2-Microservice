@@ -2,8 +2,9 @@ using Microsoft.AspNetCore.Mvc;
 using MyApp.Models;
 using MyApp.Repositories;
 using Newtonsoft.Json;
+using RabbitMQ.Client;
 using StackExchange.Redis;
-using System;
+using System.Text;
 using System.Threading.Tasks;
 using web_app_domain;
 using web_app_repository;
@@ -25,8 +26,6 @@ namespace web_app_performance.Controllers
         [HttpGet]
         public async Task<IActionResult> GetProdutos()
         {
-   
-
             var produtos = await _repository.ListarProdutosAsync();
             if (produtos == null)
             {
@@ -39,13 +38,36 @@ namespace web_app_performance.Controllers
         [HttpPost]
         public async Task<IActionResult> Post([FromBody] Produto produto)
         {
+            // Salva o produto no repositório
             await _repository.SalvarProdutoAsync(produto);
 
-            // Limpar o cache
+            // Limpa o cache Redis
             string key = "getprodutos";
             redis = ConnectionMultiplexer.Connect("localhost:6379");
             IDatabase db = redis.GetDatabase();
             await db.KeyDeleteAsync(key);
+
+            // Envia mensagem para a fila RabbitMQ
+            var factory = new ConnectionFactory() { HostName = "localhost" };
+            using var connection = factory.CreateConnection();
+            using var channel = connection.CreateModel();
+            const string fila = "produto_cadastrado";
+
+            // Declara a fila caso ela não exista
+            channel.QueueDeclare(queue: fila, durable: false, exclusive: false, autoDelete: false, arguments: null);
+
+            // Cria a mensagem JSON com as informações do produto
+            var mensagem = new
+            {
+                produtoId = produto.Id.ToString(),
+                nomeProduto = produto.Nome,
+                quantidadeInicial = produto.Quantidade
+            };
+            string mensagemJson = JsonConvert.SerializeObject(mensagem);
+            var body = Encoding.UTF8.GetBytes(mensagemJson);
+
+            // Envia a mensagem para a fila
+            channel.BasicPublish(exchange: "", routingKey: fila, basicProperties: null, body: body);
 
             return Ok();
         }
@@ -69,7 +91,6 @@ namespace web_app_performance.Controllers
         {
             await _repository.DeletarProdutoAsync(id);
 
-     
             string key = "getprodutos";
             redis = ConnectionMultiplexer.Connect("localhost:6379");
             IDatabase db = redis.GetDatabase();
@@ -79,4 +100,3 @@ namespace web_app_performance.Controllers
         }
     }
 }
-
